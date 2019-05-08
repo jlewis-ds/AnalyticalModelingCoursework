@@ -1,0 +1,277 @@
+---
+title: "ISYE 6501 - Homework 8"
+author: "Justin Lewis"
+date: "February 28, 2019"
+output: html_document
+---
+
+Start by clearing the environment and importing the relevant packages. Still struggling to prevent these annoying outputs.
+
+```{r Initialization Section}
+rm(list=ls())
+library(kernlab, quietly=TRUE)
+library(knitr, quietly=TRUE)
+library(ggplot2, quietly=TRUE)
+library(glmnet, quietly=TRUE)
+```
+# Question 11.1
+
+### Q:
+Using the crime data set uscrime.txt from Questions 8.2, 9.1, and 10.1, build a regression model using:
+1. Stepwise regression
+2. Lasso
+3. Elastic net
+For Parts 2 and 3, remember to scale the data first - otherwise, the regression coefficients will be on different scales and the constraint won't have the desired effect.
+
+
+### A:
+Start by importing the data to be used and splitting it up into train/test sets
+
+```{r}
+uscrime <- as.data.frame(read.csv('uscrime.txt', header=TRUE, sep='\t'))
+
+#Split data up into train/test
+train_size <- floor(0.75*nrow(uscrime)) 
+set.seed(42)
+train_indices <- sample(seq_len(nrow(uscrime)), size=train_size)
+train <- uscrime[train_indices, ]
+test <- uscrime[-train_indices, ]
+```
+
+Now going to begin by using stepwise regression. I am going to start with every factor, and then iterate through the predictors which give a high p-value.
+
+```{r}
+#1. Stepwise Regression
+
+#First need to fit the model using all the variables
+lmall <- lm(train$Crime ~., train[1:15])
+
+#Now check the summary of the model
+lmallsummary <- summary(lmall)
+print(lmallsummary)
+```
+
+From the summary of the model with every variable, we see there are several variables with p-values over the threshold of 0.05. Now the iteration over all of the variables is repetitive, so I am going to define a function to do it for me. The function takes in a summary, a set of attributes, and a response variable. If there are any p-values over 0.05 in the coefficients of the summary, they are ordered and the highest is removed. Then the new set of attributes are fit to the response for a new model, and back elim is run again until there are no p-values over 0.05.
+
+This is the opposite method to what was seen in the lectures, where we began with no factors and added them in individually. Instead I am starting with ALL the factors, and removing them one-by-one.
+
+```{r}
+back_elim <- function(summ, atts, response){
+  #Take in a summary, get the coefficients, sort the p-values, and remove the highest
+  
+  #Create a new df with the coefficients table in the provided summary
+  ms_df <- as.data.frame(summ['coefficients'])[2:nrow(as.data.frame(summ['coefficients'])),]
+  
+  #Order the df based on the values in the p-values column
+  ms_df <- ms_df[order(ms_df$coefficients.Pr...t..),]
+  
+  #Reverse the result so the highest are at the top. Could not make descending option work?
+  ms_df <- ms_df[dim(ms_df)[1]:1,]
+  
+  #Get the subset with p-values over 0.05
+  high_pvs <- ms_df[ms_df['coefficients.Pr...t..']>0.05,]['coefficients.Pr...t..']
+  
+  #If there are any p-values over 0.05, remove the highest, then fit a new model with the remaining attributes
+  if (nrow(high_pvs)>0){
+    print(paste('Removing:', row.names(high_pvs)[[1]], 'from attributes.'))
+    atts <- atts[, !(names(atts) %in% c(row.names(high_pvs)[[1]]))]
+    new_m <- lm(response ~., atts)
+    new_s <- summary(new_m)
+    back_elim(new_s, atts, response)
+  }
+  #Otherwise, return all the good attributes to use
+  else if (nrow(high_pvs) == 0){
+    print(paste('Remaining attributes:', list(colnames(atts))))
+    return(atts)
+  }
+}
+```
+
+Now lets try it out with the summary and attributes from the first model with all of the predictors used.
+
+```{r}
+#Store the results of the backwards elimination
+stepwiseatts <- back_elim(summ=lmallsummary, atts=train[1:15], response=train$Crime)
+
+#Fit a new model with the remaining attributes
+lmswreg <- lm(train$Crime ~., stepwiseatts)
+summary(lmswreg)
+```
+
+Through the stepwise regression method the number of attributes/factors in our model was reduced to 5 from 15 and while the multiple R-squared dropped a little bit, the resulting adjusted R-squared actually increased. Due to the increased simplicity and small amount of change in metrics, I would consider this a much better model, but it should be tested on the test set as well.
+
+```{r}
+#Make the predictions
+singlepredict <- predict.lm(lmswreg, test[1:15])
+
+#Calculate the R-squared
+sst <- sum((test$Crime-mean(test$Crime))^2)
+sse <- sum((test$Crime-singlepredict)^2)
+r2 <- 1 - sse/sst
+print(paste('R-squared value on test data:' , r2))
+```
+
+We did not perform nearly as well on the test data. This is likely due to overfitting on the training set since our data set is so small.
+
+Before we move on to LASSO and Elastic Net, we need to first create a scaled version of our data.
+
+```{r}
+#Need to create a scaled version of the data, but not the target column
+uscrimesc <- data.frame(cbind(scale(uscrime[1:15]), uscrime$Crime))
+
+#And make new training and test sets
+trainsc <- uscrimesc[train_indices, ]
+testsc <- uscrimesc[-train_indices, ]
+```
+
+With the data scaled and split, we can begin using LASSO to select variables. Here we use an alpha of 1 which corresponds to a LASSO method as we saw in the lectures. In the later portion we can adjust alpha to various values between 0 and 1, which is all effectively different Elastic Net implementations.
+
+```{r, fig.width=10}
+#Perform the method with alpha=1 (LASSO)
+lasso <- glmnet(x=as.matrix(trainsc[1:15]), y=trainsc$V16, family='mgaussian', alpha=1)
+
+#Check the variance explained vs the lambda parameter
+par(mfrow=c(1,2))
+plot(lasso$lambda, lasso$dev.ratio, xlab='Lambda', ylab='Variance Explained', main='Variance Explained vs Lambda', col='darkred')
+
+#And the number of non-zero coefficients vs the lambda parameter
+plot(lasso$lambda, lasso$df, xlab='Lambda', ylab='Number of Non-Zero Coefficients', main='Non-Zero Coefficients vs Lambda', col='darkred')
+```
+
+Here we see the effect of the lambda parameter. With no penalty (lambda=0) we have nearly all the variance in our data explained and all 15 predictors have non-zero coefficients. As the penalty multiplier increases, we have fewer non-zero coefficients and as a result we get less variance explained.
+
+```{r,fig.width=10}
+#This will create predictions using every single option from above.
+lasso_preds <- predict.glmnet(lasso, newx=as.matrix(testsc[1:15]))
+r2s <- list()
+#Now make a list of the R-squared value on the test set for each model
+for (i in 1:ncol(lasso_preds)){
+  #Calculate the R-squared
+  sst <- sum((testsc$V16-mean(testsc$V16))^2)
+  sse <- sum((testsc$V16-lasso_preds[, i])^2)
+  r2 <- 1 - sse/sst
+  r2s[[i]] <- r2
+}
+#So the best model is
+print(which.max(r2s))
+
+#With an R-squared of
+r2s[which.max(r2s)]
+
+#Visualizing how each model did
+plot(1:ncol(lasso_preds), r2s, xlab='Model Number', ylab='R-squared', main='R-squared vs Model Number', type='o', col='blue')
+```
+
+We know which model performed best on the test data, but we have not checked the actual coefficients. To do this we go back to the LASSO portion and can grab the coefficient matrix corresponding the the best model.
+
+```{r}
+#Store the index of the best model
+best <- which.max(r2s)
+#Print the coefficients
+lasso$beta[, best]
+```
+
+So our best model results in one extra factor compared to the step-wise method. However we got a much better metric value, with the higher R-squared.
+
+One thing to note, is that this method has a flaw. By using the test data to determine which model to use from the LASSO method, we actually used it as a validation set. To truly know the effectiveness of the model we would want to use a third, non-used set for a true test. As it is we fit the data to the train set, then used the test set to choose the coefficients/model. But with so little data I am going to leave it as it is.
+
+
+Now by adjusting alpha, we can build a model using ElasticNet.
+
+```{r, fig.width=10}
+#Try starting with a conservative value of 0.5, and repeat similar method as above
+elastic <- glmnet(x=as.matrix(trainsc[1:15]), y=trainsc$V16, family='mgaussian', alpha=0.5)
+
+#Check the variance explained vs the lambda parameter
+par(mfrow=c(1,2))
+plot(elastic$lambda, elastic$dev.ratio, xlab='Lambda', ylab='Variance Explained', main='Variance Explained vs Lambda', col='darkred')
+
+#And the number of non-zero coefficients vs the lambda parameter
+plot(elastic$lambda, elastic$df, xlab='Lambda', ylab='Number of Non-Zero Coefficients', main='Non-Zero Coefficients vs Lambda', col='darkred')
+```
+
+We see a significantly different result with the adjusted alpha value. Our variance drops off much faster, and the number of non-zero coefficients remains high much longer. 
+
+```{r,fig.width=10}
+#This will create predictions using every single option from above.
+elastic_preds <- predict.glmnet(elastic, newx=as.matrix(testsc[1:15]))
+r2s <- list()
+#Now make a list of the R-squared value on the test set for each model
+for (i in 1:ncol(elastic_preds)){
+  #Calculate the R-squared
+  sst <- sum((testsc$V16-mean(testsc$V16))^2)
+  sse <- sum((testsc$V16-elastic_preds[, i])^2)
+  r2 <- 1 - sse/sst
+  r2s[[i]] <- r2
+}
+#So the best model is
+print(which.max(r2s))
+
+#With an R-squared of
+r2s[which.max(r2s)]
+
+#Visualizing how each model did
+plot(1:ncol(elastic_preds), r2s, xlab='Model Number', ylab='R-squared', main='R-squared vs Model Number', type='o', col='blue')
+```
+
+With the elastic net method we see a much smoother increase in the calculated R-squared value, with the peak much later on in the method. Now similar to above, we should also check what the coefficients of our model are.
+
+```{r}
+#Store the index of the best model
+best <- which.max(r2s)
+#Print the coefficients
+elastic$beta[, best]
+```
+
+With this method we did not actually reduce any of the coefficients to zero, but our range of coefficient values is much smaller than with the LASSO method. To understand the effects of different values of alpha, we can iterate through multiple values.
+
+```{r, fig.width=10}
+#Define several alpha values, not including zero because ridge regression gives quite different results
+alphas <- c(0.2, 0.4, 0.6, 0.8)
+
+#Iterate through and store each model using 'assign'
+for (a in alphas){
+  assign(paste('fit', a, sep='_'), glmnet(x=as.matrix(trainsc[1:15]), y=as.matrix(trainsc$V16), alpha=a, family='mgaussian'))
+}
+
+#Now recreate the analysis for our original model, but for all of the above models
+mods <- list(fit_0.2, fit_0.4, fit_0.6, fit_0.8)
+ind <- 1
+r2list<- list()
+bests <- list()
+#This will create predictions using every single option from above.
+for (m in mods){
+  preds <- predict.glmnet(m, newx=as.matrix(testsc[1:15]))
+  r2s <- list()
+  #Now make a list of the R-squared value on the test set for each model
+  for (i in 1:ncol(preds)){
+    #Calculate the R-squared
+    sst <- sum((testsc[['V16']]-mean(testsc[['V16']]))^2)
+    sse <- sum((testsc[['V16']]-preds[, i])^2)
+    r2 <- 1 - sse/sst
+    r2s[[i]] <- r2
+  }
+  r2list[[ind]] <- r2s
+  bests[[ind]] <- which.max(r2s)
+  ind = ind + 1
+}
+
+#Visualizing how each model did
+plot(1:ncol(preds), r2list[[1]], xlab='Model Number', ylab='R-squared', main='R-squared vs Model Number', type='o', col='blue')
+lines(1:ncol(preds), r2list[[2]], type='o', col='darkgreen')
+lines(1:ncol(preds), r2list[[3]], type='o', col='darkred')
+lines(1:ncol(preds), r2list[[4]], type='o', col='purple')
+legend(1, 0.4, legend=c('0.2', '0.4', '0.6', '0.8'), col=c('blue', 'darkgreen', 'darkred', 'purple'), lty=8, cex=0.8)
+```
+
+As we increase the alpha value, the resulting maximum R-squared values are reached earlier and earlier. Now if we look into the coefficients for each of these best performing models we can see how much of an affect the alpha parameter has.
+
+```{r}
+#Go through each model and print the best performing coefficients
+for (i in seq_along(mods)){
+  print(paste('For alpha of', alphas[i], 'optimal coefficients are:'))
+  print(mods[[i]]$beta[, bests[[i]]])
+}
+```
+
+We see with the increasing alpha parameter, the coefficients are shrinking slowly, with only an alpha of 0.8 resulting in any of the parameter coefficients shrinking to 0. With lower values like 0.2 we are introducing more bias into the model in order to reduce variances in the estimate, while with higher values like 0.8 we are accepting higher variance in order to remain less biased.
