@@ -1,0 +1,186 @@
+---
+title: "ISYE 6501 - Homework 5"
+author: "Justin Lewis"
+date: "February 7, 2019"
+output:
+  html_document:
+    df_print: paged
+---
+
+Start by clearing variables and importing packages
+```{r Initialization Section}
+rm(list=ls())
+library(kernlab, quietly=TRUE)
+library(knitr, quietly=TRUE)
+library(ggplot2, quietly=TRUE)
+```
+
+# Question 8.1
+### Q:
+Describe a situation or problem from your job, everyday life, current events, etc., for which a linear regression model would be appropriate. List some (up to 5) predictors that you might use.
+
+### A:
+In day to day life I drive a bit of an older Jeep, which is not very good on gas. In order to model the gas mileage I can expect we could use a linear regression model with the weight of the vehicle and passengers, the speed I'm going at any one time, and the grade of the hill I am driving on at any time. Most likely the relationship is not nicely linear, but by creating polynomial features from these three we could probably fit a reasonable model. 
+
+
+
+# Question 8.2
+### Q:
+Using crime data from http://www.statsci.org/data/general/uscrime.txt (file uscrime.txt,
+description at http://www.statsci.org/data/general/uscrime.html ), use regression (a useful R function is lm or glm) to predict the observed crime rate in a city with the following data:
+```{r}
+input = list(14.0, 0, 10.0, 12.0, 15.5, 0.640, 94.0, 150, 1.1, 0.120, 3.6, 3200, 20.1, 0.04, 39.0)
+```
+### A:
+First we are going to need to import our data, and investigate:
+
+```{r}
+#Import data
+data <- as.data.frame(read.csv('uscrime.txt', header=TRUE, sep='\t'))
+
+#Check the data for outliers using boxplot and qqplot
+par(mfrow=c(1,2))
+boxplot(data$Crime, xlab='Crime', main='Boxplot of Crime Column')
+qqnorm(data$Crime)
+qqline(data$Crime, col='Blue', lw=2)
+```
+
+So it looks like our data is not normally distributed, and has a few outliers. That is good to know for when we begin looking at our model results.
+
+Now going to define the attributes to be used in the model, and with R we can immediately just fit a model to every column naively, and examine the results. 
+
+```{r}
+#Define the data we can use for predictions
+attribs <- data[, 1:ncol(data)-1]
+lm_all <- lm(data$Crime~., attribs)
+```
+
+Now we have a model fit using every attribute, linearly attempting to predict the data['Crime'] column. This method is not ideal, because we do not really know if the attributes we supplied are the optimal ones. To check this we can look over the summary of our model.
+
+```{r}
+naivemodel_summary <- summary(lm_all)
+print(naivemodel_summary)
+
+```
+
+
+From this summary we can see a lot of information, including the calculated p-values for each attribute of the model. Recalling that a typical p-value threshold is 0.05, we can see which attributes are most significant, and which ones most likely have no real relationship with our response variable (Crime). 
+
+Using this summary value, we can grab all the attributes with p-values over 0.05 and remove them. However, we should not remove them all at once since as each attribute is removed, re-fitting our model will produce different p-values. First, the attribute with the highest p-value will be removed. Next, the model will be re-fit with only the remaining attributes. A new summary will be produced, and this will be repeated until there are only significant attributes remaining in the model
+
+```{r}
+#Create a new df from the coefficients table in the summary
+nms_df <- as.data.frame(naivemodel_summary['coefficients'])
+
+#Order the df based on the values in the p-values column
+nms_df <- nms_df[order(nms_df$coefficients.Pr...t..),]
+
+#Reverse the resulting df since I could not get a descending option in order() to work
+nms_df <- nms_df[dim(nms_df)[1]:1,]
+
+#Grab only the data where the p-value is above 0.05
+high_pv <- nms_df[nms_df['coefficients.Pr...t..'] > 0.05,]['coefficients.Pr...t..']
+
+#Now check which attribute has the highest p-value
+print(paste('The attribute with the highest p-value is', row.names(high_pv)[[1]]))
+```
+
+With this, we can now make new attributes and build a new model.
+
+```{r}
+#Create new attributes with the highest o
+new_attribs <- attribs[, !(names(attribs) %in% c(row.names(high_pv)[[1]]))]
+new_m <- lm(data$Crime~., new_attribs)
+new_s <- as.data.frame(summary(new_m)['coefficients'])
+
+print(new_s['coefficients.Pr...t..'])
+```
+
+Looking at this we can see that our new summary has different p-values for the remaining attributes which were used in the model. Now we are basically going to want to repeat the same process until all p-values are below our significance level. This is tedious, so I'll define a function to do it using recursion.
+
+```{r}
+back_prop <- function(summ, atts, response){
+  #Take in summary, grab coefficients, order the p-values, remove the highest from attributes
+  #Create a new df from the coefficients table in the summary
+  ms_df <- as.data.frame(summ['coefficients'])[2:nrow(as.data.frame(summ['coefficients'])),]
+  ms_df <- ms_df[order(ms_df$coefficients.Pr...t..),]
+  ms_df <- ms_df[dim(ms_df)[1]:1,]
+  high_pvs <- ms_df[ms_df['coefficients.Pr...t..'] > 0.05,]['coefficients.Pr...t..']
+  
+  #If there are p-values > 0.05, make a new model after removing the highest p-value attr
+  if (nrow(high_pvs) > 0){
+    print(paste('Removing:', row.names(high_pvs)[[1]], 'from attributes.'))
+    atts <- atts[, !(names(atts) %in% c(row.names(high_pvs)[[1]]))]
+    new_m <- lm(response~., atts)
+    new_s <- summary(new_m)
+    back_prop(new_s, atts, response)
+  }
+  #Otherwise, return the good attributes
+  else if (nrow(high_pvs) == 0){
+    print(paste('Remaining attributes:', list(colnames(atts))))
+    return(atts)
+  }
+}
+```
+
+Now we can try it using the results from our first iteration.
+
+```{r}
+#Use the back_prop algorithm to get the relevant attributes
+rel_atts <- back_prop(summary(new_m), new_attribs, data$Crime)
+
+#Make a new model
+model <- lm(data$Crime~., rel_atts)
+
+#Lets check the summary with our new model
+summary(model)
+```
+
+We can see that our R-squared and adjusted R-squared values are still fairly high, all of the p-values for the remaining attributes are well within the 0.05 threshold, and the overall p-value of the plot is very low. If we compare the R-squared value to the first initial model, we see a small reduction, but the adjusted R-squared value has actually increased. Additionally, the estimated coefficients for the attributes are all far away from zero, telling us that they are very relevant to the model. Overall with these results I am content with this model, and will use these attributes in the final model. 
+
+At this point we can attempt to make our prediction for the input data, but only using the relevant attributes.
+
+```{r}
+#Build the prediction for the data
+nd <- t(as.vector(c(14.0, 10.0, 12.0, 3.6, 20.1, 0.04)))
+coefs <- row.names(summary(model)$coefficients)[c(1:length(nd)+1)]
+df = as.data.frame(nd)
+colnames(df) = coefs
+p <- predict(model, newdata=df)
+predicted_value <- p[[1]]
+```
+
+Using the resulting model from the feature selection process, and the provided data's relevant attributes, the predicted Crime value is `r predicted_value`. To see if this is a realistic value within the range of the 'Crime' values, we can check a boxplot with the resulting point overlayed. If it is within the whiskers it is a good indication that our prediction is a reasonable value. 
+
+```{r}
+qplot(x='', y=data$Crime, geom='boxplot', ylab='Crime Values', main='Crime Values Distribution') + geom_point(aes(x='', y=c(predicted_value)), color='red',size=3)
+```
+
+The red point is the resulting prediction, which does seem to be a reasonable value. 
+
+This was all done without any kind of scaling. Now using the same back_prop function, I can easily check how much of a difference scaling the data before analysis will make.
+
+```{r Scaling}
+#Scale the data
+scaled_data <- as.data.frame(scale(data))
+
+#Get our scaled attributes
+scaled_attribs <- as.data.frame(scaled_data[, 1:ncol(data)-1])
+
+#Build the first model with everything
+scm_1 <- lm(scaled_data$Crime~., scaled_attribs)
+
+#Now look at the summary
+scm_1_summ <- summary(scm_1)
+print(scm_1_summ)
+```
+
+Looks pretty comparable to the previous model, but note that the intercept now has a p-value of 1, with an extremely small coefficient. Likely a result of the scaling making it so that the intercept goes through zero and does not move. We can run through the function to select relevant attributes.
+
+```{r}
+screl_atts <- back_prop(scm_1_summ, scaled_attribs, scaled_data$Crime)
+scmodel <- lm(scaled_data$Crime~., screl_atts)
+print(summary(scmodel))
+```
+
+And we end up with an identical model, but the intercept now goes through 0. Additionally we have a much smaller residual standard error on the degrees of freedom.
