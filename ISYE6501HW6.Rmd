@@ -1,0 +1,125 @@
+---
+title: "ISYE 6501 - Homework 6"
+author: "Justin Lewis"
+date: "February 14, 2019"
+output: html_document
+---
+sdf
+The first section is hidden to avoid packge imports giving long output, but begin by importing all packages and clearing the environment to begin fresh using rm(list=ls()).
+
+```{r Initialization Section, echo=FALSE}
+rm(list=ls())
+library(kernlab, quietly=TRUE)
+library(knitr, quietly=TRUE)
+library(ggplot2, quietly=TRUE)
+library(factoextra, quietly=TRUE)
+library(GGally, quietly=True)
+```
+# Question 9.1
+Using the same crime data set uscrime.txt as in Question 8.2, apply Principal Component Analysis and then create a regression model using the first few principal components. Specify your new model in terms of the original variables (not the principal components), and compare its quality to that of your solution to Question 8.2.
+
+Need to begin by importing the data:
+```{r import}
+data <- as.data.frame(read.csv('uscrime.txt', header=TRUE, sep='\t'))
+atts <- data[1:ncol(data)-1]
+resp <- data[ncol(data)]
+```
+
+If we are going to use PCA, it should be to reduce the number of features used, or to address multi-collinearity in the data. Let's see if this is present in our data.
+
+```{r, fig.height=8, fig.width=12}
+#ggpairs(atts, columns=1:ncol(atts))
+```
+
+From this we can see there are certainly some correlations within the data. Particularly PO1 and PO2, as well as Wealth with each of the previously mentioned. PCA could be used well here to remove this collinearity.
+
+
+Now apply PCA, making sure to scale as well:
+```{r}
+#Perform the PCA
+pca_atts <- prcomp(~., atts, scale=TRUE)
+
+#Check the summary
+summary(pca_atts)
+
+#Grab the coefficients
+pca_evectors <- as.data.frame(pca_atts[2])
+
+#Visualize how much variance is explained in each PC
+fviz_eig(pca_atts)
+```
+
+Based on both the Scree plot and the summary, I am going to base my model on the first 5 principal components. This is because from the summary we can see anything after this is accounting for less than 5% of the variance seen in the data. Additionally, the scree plot shows the same reduction in amount of explained variance after the 5th principal component. 
+
+
+```{r Model with PCs}
+#Grab the principal component values from the pca_atts
+pcavalues <- as.data.frame(pca_atts[['x']])
+
+#Build the model, using the crime column as the response, and the top 5 PCs as mentioned earlier
+pca_model <- lm(data$Crime ~ ., pcavalues[1:5])
+
+#Check the summary from our model
+summary(pca_model)
+```
+
+Now grab the coefficents from each PC, and use them to work backwards and get our implied coefficients for the original factors in the data
+```{r}
+#Grab all the coefficients 
+mcoefs <- as.data.frame(summary(pca_model)$coefficients)
+
+#Skip the intercept coefficient, get only coefficients relevant to components
+pccoefs <- mcoefs$Estimate[2:length(mcoefs$Estimate)]
+
+#Make the transverse matrix of the first 5 predictor eivenvectors
+#This is done so that we can multiply the two 'vectors' of numbers together to get the final coefficients. Transpose is used to get the variables as columns
+pca_evectors_trans <- t(pca_evectors[1:5])
+pca_evectors_trans
+
+#Calculate the implied original coefficent in each of the components by multiplying 
+original_calc <- pca_evectors_trans*pccoefs
+original_calc
+```
+
+At this point we have all the coefficients for each original variable, separated into each of the prinicpal components we used. Now if we sum each column and unscale, we can find the final coefficients to put our model in terms of the original variables.
+
+```{r}
+#Sum all the original coefficients together from each of the principal components
+original_coefs <- as.data.frame(colSums(original_calc))
+mu <- sapply(atts, mean)
+sd <- sapply(atts, sd)
+unscaled_original_coefs <- original_coefs/sd
+
+#Make a table with all the implied coefficients with our original factors
+kable(unscaled_original_coefs, col.names='Coefficient', caption='Implied Coefficients of Original Factors')
+```
+
+Comparing these coefficients to the results of the final model in the previous homework assignment, the values all seem to be in a reasonable range. Additionally, the R-squared and adjusted R-squared values for the model appear to be reasonable. While they are lower than the model from the previous assignment, that is to be expected since we only used the first 5 principal components from the PCA method which accounted for ~80% of the variance in the data. 
+
+Now to finish getting our model in terms of the original coefficients, we need the intercept as well.
+
+```{r}
+#Grab the estimate from the model using the first 5 principal components
+pca_b <- mcoefs$Estimate[[1]]
+
+#Subtract the total of all the other 'intercept' portions of the scaling results
+orig_b <- pca_b - sum(original_coefs*mu/sd)
+
+#Check the value
+orig_b
+```
+
+Using the resulting intercept and our coefficients from above, we can attempt a prediction with the given new city data. 
+
+```{r}
+#Input data
+input = as.vector(c(14.0, 0, 10.0, 12.0, 15.5, 0.640, 94.0, 150, 1.1, 0.120, 3.6, 3200, 20.1, 0.04, 39.0))
+
+#Now multiply each attibute by its relevant coefficient, and add our intercept
+predicted_crime <- t(input) %*% unscaled_original_coefs[[1]]+orig_b
+```
+
+Our prediction is `r predicted_crime` which is very comparable to my previous prediction from homework 5, of 1392. 
+
+
+
