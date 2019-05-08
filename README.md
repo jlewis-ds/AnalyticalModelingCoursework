@@ -11,3 +11,5 @@ HW 6 - PCA application, linear regression, p-value testing, Scree plots
 
 HW 7 - Regression tree, random forest, cross validation, R-squared, visualization, logistic regression on credit data, ROC curve, precision/recall
 
+HW 8 - Stepwise regression, LASSO, Elastic net, visualization
+
