@@ -1,0 +1,181 @@
+---
+title: "ISYE 6501 - Homework 10"
+author: "Justin Lewis"
+date: "March 14, 2019"
+output: html_document
+---
+
+Start by clearing the environment and importing the relevant packages.
+
+```{r Initialization Section, warning=FALSE, message=FALSE, error=FALSE}
+rm(list=ls())
+library(kernlab, quietly=TRUE)
+library(knitr, quietly=TRUE)
+library(ggplot2, quietly=TRUE)
+```
+
+# Question 14.1
+
+### Q:
+The breast cancer data set has missing values.
+
+1. Use the mean/mode imputation method to impute values for the missing data.
+
+2. Use regression to impute values for the missing data.
+
+3. Use regression with perturbation to impute values for the missing data.
+
+4. (Optional) Compare the results and quality of classification models (e.g., SVM, KNN) build using:
+
+    (1) the data sets from questions 1,2,3
+  
+    (2) the data that remains after data points with missing values are removed
+  
+    (3) the data set when a binary variable is introduced to indicate missing values
+
+### A:
+Lets begin by importing our data and taking a look at the form.
+```{r}
+#Import data
+bcdata <- data.frame(read.csv('breast-cancer-wisconsin.data.txt'), stringsAsFactors=FALSE)
+
+#Rename columns based on provided attribute info. Messed with to reduce table widths.
+colnames(bcdata) <- c('id', 'clump.thickn', 'uni.cl.size', 'uni.cl.shape', 'marg.adhes', 'sing.epith.cl.size', 'bare.nuclei', 'bland.c', 'norm.nucl', 'mito', 'class')
+kable(bcdata[1:5, ], caption='First 5 Rows of Breast Cancer Data')
+
+#Make copies to use for parts 2 and 3.
+bc2data <- cbind(bcdata)
+bc3data <- cbind(bcdata)
+
+#Store the column names
+cols <- colnames(bcdata)
+```
+
+So we have our data and have the table cleaned up with more informative column names. Now we can look into how much missing data is in each column. Going to check NA, NULL, and 'other' values.
+
+```{r}
+#Check for any NA data in the dataframe
+print(bcdata[is.na(bcdata)==TRUE])
+
+#Check for NULLs
+lapply(bcdata, is.null)
+
+#This shows us the summary for each column
+summary(bcdata)
+
+#Since 'bare.nuclei' has 'other' listed, lets see what else there is in the column
+unique(bcdata$bare.nuclei)
+```
+
+Based on this it looks like only the 'bare.nuclei' column has any 'missing' values. 'Missing' because instead of NA or Null, we have question marks in some rows. From what I can find here these look like the only missing values. Lets look at these rows specifically.
+
+```{r}
+missing <- subset(bcdata, bare.nuclei == '?')
+missing_rows <- rownames(missing)
+kable(missing, caption='Subset of BCData with Missing Values')
+```
+
+
+
+```{r}
+#Create the mean value
+bnmean <- round(mean(as.numeric(bcdata[['bare.nuclei']])), 4)
+
+#Since there was missing data, bare.nuclei column type is a factor. Need to use levels.
+levels(bcdata$bare.nuclei)[levels(bcdata$bare.nuclei)=='?'] <- as.character(bnmean)
+
+#Now check the rows that previously had missing values
+kable(bcdata[missing_rows, ], caption='Previously Missing Rows of BCData')
+```
+
+Looks like we have finished filling in the 'missing' data using mean/mode imputation. 
+
+Moving on to the regression portion, I am going to cheat a bit by reusing the missing_rows to make it a bit easier to split the data into what is basically training data, and data to be predicted on.
+
+```{r, warning=FALSE}
+#Define what will be our predictors, and the target. Basically using all columns other than bare.nuclei to predict the value in bare.nuclei.
+predictors <- bc2data[, -7]
+target <- bc2data[, 7]
+
+#Split the data up
+train_X <- predictors[-c(as.numeric(missing_rows)),]
+test_X <- predictors[c(as.numeric(missing_rows)), ]
+train_y <- target[-c(as.numeric(missing_rows))]
+
+#We don't really need this since we will not be comparing the predictions to anything
+test_y <- target[-c(as.numeric(missing_rows))]
+
+#Make sure there are no question marks in train_y
+'?' %in% train_y
+
+#Now need to convert the training y-values from factors to something interpretable by the model
+train_y <- as.character(levels(train_y))[train_y]
+
+#With our training data ready, we can make a regression model
+imputelm <- lm(train_y~., data=train_X)
+
+#And predict the imputations
+imputedvalues <- predict.lm(imputelm, newdata=test_X)
+
+print(imputedvalues)
+```
+
+We can see these values are significantly different than the mean value used in the first portion. Now want to fill in the indices in bc2data with the new values.
+
+```{r}
+#Convert to a matrix to simplify assigning new values in specific locations
+bc2mat <- as.matrix(bc2data)
+
+#Go through each value and assign the predicted value at the location
+for (ind in seq_along(as.numeric(missing_rows))){
+  bc2mat[as.numeric(missing_rows[ind]),'bare.nuclei'] <- as.numeric(imputedvalues[[ind]])
+}
+#Convert back to a dataframe
+bc2data <- data.frame(bc2mat)
+
+#Now check the rows that previously had missing values
+kable(bc2data[missing_rows, ], caption='Previously Missing Rows of BCData - Filled with Regression')
+```
+
+With this table we see that the previously 'missing' values have been filled in with our predicted values from regression.
+
+For regression with perturbation we have a lot of options to choose from, and we can just build on top  of the previous section. We can take the predicted values and add some perturbation to them before we replace the missing values. Maybe we want to produce some random value between +10% of the value and -10% of the value. We cannot just use the same range for every value, because for larger numbers we will end up with a very small perturbation and for smaller values we end up changing the number completely. The +/-10% is an arbitrary limit, realistically it could be much more or much less. 
+
+```{r}
+#Loop through the predicted values and add a random value in the range of -10% and +10% of the current value.
+perturbedimputed <- list()
+for (i in seq_along(imputedvalues)){
+  val <- imputedvalues[i]
+  pertval <- val + runif(1, min=-0.1*val, max=0.1*val)
+  perturbedimputed[i] <- pertval
+}
+
+#Now place these new values into bc3data to replace the missing values
+bc3mat <- as.matrix(bc3data)
+for (ind in seq_along(as.numeric(missing_rows))){
+  bc3mat[as.numeric(missing_rows[ind]),'bare.nuclei'] <- as.numeric(perturbedimputed[[ind]])
+}
+bc3data <- data.frame(bc3mat)
+
+#And confirm they've been replaced
+kable(bc3data[missing_rows, ], caption='Previously Missing Rows of BCData - Filled with Regression and Perturbation')
+```
+
+We can compare the differences between the regression values and the regression+perturbation values as well, just to see how much of an adjustment was made.
+
+```{r}
+compdf <- data.frame(imputedvalues)
+compdf$perturbedvalues <- perturbedimputed
+kable(compdf, caption='Imputed vs Perturbed Imputed Values')
+```
+
+So while there is not a huge difference in this set, by adding the perturbation we ensure that if there was more missing data with the same set of predictor values we would not predict the exact same value. Effectively adding a bit of 'jitter' to the missing value predictions. 
+
+
+# Question 15.1 
+
+### Q:
+Describe a situation or problem from your job, everyday life, current events, etc., for which optimization would be appropriate. What data would you need?
+
+### A:
+At work I deal with an accelerator beamline. Tuning the beamline is an optimization process. One needs to know the variables (beamline element settings, beam mass/charge ratio, beam energy), the constraints (keep them close to theory values, some cannot be negative, cannot be more than the maximum slider setting), and the cost function (measuring beam transmission as well as how close to an ideal gaussian beam profile we have at a specific location as read by a position monitor).
